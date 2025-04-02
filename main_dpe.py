@@ -25,7 +25,7 @@ def get_arguments():
     parser.add_argument('--config', dest='config', required=True, help='settings of DPE on specific dataset in yaml format.')
     parser.add_argument('--wandb-log', dest='wandb', action='store_true', help='Whether you want to log to wandb. Include this flag to enable logging.')
     parser.add_argument('--datasets', dest='datasets', type=str, required=True, help="Datasets to process, separated by a slash (/). Example: I/A/V/R/S")
-    parser.add_argument('--data-root', dest='data_root', type=str, default='../data/', help='Path to the datasets directory. Default is ../data/')
+    parser.add_argument('--data-root', dest='data_root', type=str, default='./dataset/', help='Path to the datasets directory. Default is ../data/')
     parser.add_argument('--backbone', dest='backbone', type=str, choices=['RN50', 'ViT-B/16', 'SigLIP', 'OpenCLIP'], required=True, help='CLIP model backbone to use: RN50 or ViT-B/16.')
     parser.add_argument('--coop', dest='coop', action='store_true', help='Whether you want to use CoOp weights for initialization.')
 
@@ -338,7 +338,7 @@ def main():
 
         if args.wandb:
             run_name = f"{dataset_name}"
-            run = wandb.init(project="ETTA-CLIP", config=cfg, group=group_name, name=run_name)
+            run = wandb.init(project="20250401-DPE", config=cfg, group=group_name, name=run_name)
 
         acc = run_test_dpe(cfg['positive'], cfg['learning_rate'], test_loader, clip_model, clip_weights, dataset_name)
 

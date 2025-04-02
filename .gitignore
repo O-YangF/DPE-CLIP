@@ -1,0 +1,48 @@
+dataset/
+__pycache__/
+.vscode/
+
+# ==============
+# 通用开发环境文件
+# ==============
+# Python 字节码文件
+*.pyc
+*.pyo
+__pycache__/
+*_py_cache_/  # 适配类似 clip_py_cache_ 的变体目录
+
+# 日志文件
+*.log
+debug*.log    # 覆盖 debug-cli.log/debug-internal.log 等变体
+
+# 包管理文件
+requirements.txt
+conda-environment.yaml
+
+# ==============
+# 实验跟踪系统
+# ==============
+# Weights & Biases 相关文件
+.wandb/       # 隐藏目录
+wandb/        # 普通目录
+*.wandb       # wandb运行文件
+wandb-*.json  # 元数据文件
+
+# ==============
+# 运行时生成文件 
+# ==============
+/output.log
+/output_*.log
+
+# ==============
+# IDE 配置文件
+# ==============
+.vscode/
+.idea/
+*.iml
+
+# ==============
+# OS 系统文件
+# ==============
+.DS_Store
+Thumbs.db

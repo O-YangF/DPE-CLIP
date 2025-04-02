@@ -11,9 +11,12 @@ future
 scipy
 scikit-learn
 tqdm
-wandb==0.15.12
+wandb
 chardet
 ftfy
 regex
 wilds==1.2.2
 tabulate
+info-nce-pytorch
+matplotlib
+open-clip-torch 
