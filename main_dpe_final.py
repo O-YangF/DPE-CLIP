@@ -4,7 +4,6 @@ import wandb
 from tqdm import tqdm
 from datetime import datetime
 from copy import deepcopy
-import math
 
 import torch
 import torch.nn.functional as F
@@ -18,11 +17,6 @@ import clip
 from utils import *
 
 import open_clip
-
-import os
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
-
-
 
 def get_arguments():
     """Get arguments of the test-time adaptation."""
@@ -251,74 +245,37 @@ def compute_cache_logits(image_features, cache_keys, cache_values, alpha, beta, 
     cache_logits = ((-1) * (beta - beta * affinity)).exp() @ cache_values
     return alpha * cache_logits
     
-
-
 class TextResidue(nn.Module):
-    def __init__(self, clip_weights, rank=8):
+    def __init__(self, clip_weights, rank=16):
         super(TextResidue, self).__init__()
         self.feat_dim, self.cate_num = clip_weights.shape
-        
-        self.rank = rank 
-        dtype = clip_weights.dtype 
-        device = clip_weights.device
-
-        # --- 定义低秩矩阵 U 和 V (替换了原来的 residual) ---
-        # U 初始化
-        self.U = nn.Parameter(torch.empty(self.feat_dim, self.rank, dtype=dtype, device=device))
-        nn.init.kaiming_uniform_(self.U, a=math.sqrt(5)) 
-
-        # V 初始化为零
-        self.V = nn.Parameter(torch.zeros(self.cate_num, self.rank, dtype=dtype, device=device))
+        self.rank = rank
+        self.U = nn.Parameter(torch.zeros([self.feat_dim, self.rank]).half().cuda(), requires_grad=True)
+        self.V = nn.Parameter(torch.zeros([self.rank, self.cate_num]).half().cuda(), requires_grad=True)
         
     def forward(self, x):
-        # --- 计算低秩残差 U @ V.T ---
-        low_rank_residual = self.U @ self.V.T 
-
-        # --- 应用残差并归一化 ---
-        new_clip_weights = x.clone() + low_rank_residual 
-        new_clip_weights = F.normalize(new_clip_weights, dim=0) 
+        residual = self.U @ self.V
+        new_clip_weights = x.clone() + residual
+        new_clip_weights = F.normalize(new_clip_weights, dim=0)
         return new_clip_weights
     
     def reset(self):
-        # --- 重置 V 为零 ---
-        nn.init.zeros_(self.V)
-        # 重新初始化 U
-        nn.init.kaiming_uniform_(self.U, a=math.sqrt(5))
+        self.U = nn.Parameter(torch.zeros([self.feat_dim, self.rank]).half().cuda(), requires_grad=True)
+        self.V = nn.Parameter(torch.zeros([self.rank, self.cate_num]).half().cuda(), requires_grad=True)
         
-
-
-
 class PositiveCacheResidue(nn.Module):
-    def __init__(self, pos_cache_keys, rank):
+    def __init__(self, pos_cache_keys, rank=16):
         super(PositiveCacheResidue, self).__init__()
-        self.feat_dim, self.cache_size = pos_cache_keys.shape 
-        # rank 现在是必需的，直接存储
+        self.feat_dim, self.cache_size = pos_cache_keys.shape
         self.rank = rank
-        dtype = pos_cache_keys.dtype
-        device = pos_cache_keys.device
-
-        # --- 定义低秩矩阵 U_cache 和 V_cache (替换了原来的 residual) ---
-        self.U_cache = nn.Parameter(torch.empty(self.feat_dim, self.rank, dtype=dtype, device=device))
-        nn.init.kaiming_uniform_(self.U_cache, a=math.sqrt(5))
-
-        self.V_cache = nn.Parameter(torch.zeros(self.cache_size, self.rank, dtype=dtype, device=device))
+        self.U = nn.Parameter(torch.zeros([self.feat_dim, self.rank]).half().cuda(), requires_grad=True)
+        self.V = nn.Parameter(torch.zeros([self.rank, self.cache_size]).half().cuda(), requires_grad=True)
         
     def forward(self, x):
-        # --- 计算低秩残差 U_cache @ V_cache.T ---
-        low_rank_residual = self.U_cache @ self.V_cache.T 
-
-        # --- 应用残差并归一化 ---
-        new_pos_cache_keys = x.clone() + low_rank_residual
-        new_pos_cache_keys = F.normalize(new_pos_cache_keys, dim=0) 
+        residual = self.U @ self.V
+        new_pos_cache_keys = x.clone() + residual
+        new_pos_cache_keys = F.normalize(new_pos_cache_keys, dim=0)
         return new_pos_cache_keys
-
-    def reset(self):
-        # --- 重置 V_cache 为零 ---
-        nn.init.zeros_(self.V_cache)
-        # 重新初始化 U_cache
-        nn.init.kaiming_uniform_(self.U_cache, a=math.sqrt(5))
-
-
 
 class SmoothCrossEntropy(nn.Module):
     def __init__(self, alpha=0.0):
@@ -340,22 +297,6 @@ def run_test_dpe(pos_cfg, lr_cfg, loader, clip_model, clip_weights, dataset_name
         # Unpack all hyperparameters
         pos_enabled = pos_cfg['enabled']
         
-
-
-        try:
-            rank = pos_cfg['low_rank']['rank']
-            print(f"Mandatory Low Rank Adaptation enabled with rank = {rank}")
-            if not isinstance(rank, int) or rank <= 0:
-                 raise ValueError(f"Configured rank must be a positive integer. Found: {rank}")
-        except KeyError:
-            # 如果配置中确实找不到 rank，则抛出更明确的错误
-            raise KeyError("Mandatory parameter 'rank' not found in configuration under 'positive: low_rank: rank'. Please add it to the YAML file.")
-
-
-
-
-
-
         if pos_enabled:
             pos_params = {k: pos_cfg[k] for k in ['shot_capacity', 'alpha', 'beta']}
         
@@ -370,120 +311,95 @@ def run_test_dpe(pos_cfg, lr_cfg, loader, clip_model, clip_weights, dataset_name
         # Test-time adaptation
         for i, (images, target) in enumerate(tqdm(loader, desc='Processed test images: ')):
             clip_weights_local = clip_weights_global.clone().detach()
-            text_residue = TextResidue(clip_weights_local, rank=rank)
+            text_residue = TextResidue(clip_weights_local, rank=16)
+            new_clip_weights = text_residue(clip_weights_local)
 
-            # (获取初始 logits) - 注意这里可能需要调用一次 text_residue 来获取初始调整后的权重
-            initial_adapted_weights = text_residue(clip_weights_local).detach() # 获取初始状态，不计算梯度
-            image_features_x, clip_logits, entropy, prob_map, pred = get_clip_logits(images, clip_model, initial_adapted_weights)
+            image_features_x, clip_logits, entropy, prob_map, pred = get_clip_logits(images, clip_model, new_clip_weights)
             target = target.cuda()
             
-            pos_cache_residue = None # 初始化
-            pos_cache_keys = None    # 初始化
-            pos_cache_values = None  # 初始化
-            all_classes = []         # 初始化
-
             if pos_enabled:
                 entropy = get_entropy(entropy, clip_weights)
                 update_cache(pos_cache, pred, [image_features_x, entropy], pos_params['shot_capacity'])
-
-                # 检查缓存是否非空再计算 key-value 和实例化 PositiveCacheResidue
-                if pred in pos_cache and pos_cache[pred]: # 确保缓存中有内容
-                    # 注意：cache_key_value 可能需要修改以适应低秩，但目前看它只依赖 image_features_x 和 cache 内容
-                    # 这里假设 cache_key_value 返回的 pos_cache_keys 形状正确
-                    pos_cache_keys, pos_cache_values, all_classes = cache_key_value(image_features_x, pos_cache, pos_params['alpha'], pos_params['beta'], clip_weights)
-
-                    if pos_cache_keys is not None and pos_cache_keys.numel() > 0:
-                         # --- 实例化 PositiveCacheResidue (低秩模式)，传递必需的 rank ---
-                         pos_cache_residue = PositiveCacheResidue(pos_cache_keys, rank=rank)
-                    # else: pos_cache_residue 保持为 None
-
+                pos_cache_keys, pos_cache_values, all_classes = cache_key_value(image_features_x, pos_cache, pos_params['alpha'], pos_params['beta'], clip_weights)
+                pos_cache_residue = PositiveCacheResidue(pos_cache_keys, rank=16)
+                # if i != 0 and i % 1000 == 0:
+                #     visualize_cache(pos_cache, i)
             steps = 1 # Update step, set to 1 in default
             for j in range(steps):
                 new_clip_weights = text_residue(clip_weights_local)
                 final_logits = clip_logits.clone()
-
-                current_pos_cache_residue = None # 重置以捕获本次迭代的实例
-                
                 if pos_enabled and pos_cache:
                     new_pos_cache_keys = pos_cache_residue(pos_cache_keys)
-
-                    current_pos_cache_residue = pos_cache_residue # 记录供优化器使用
-
                     final_logits += compute_cache_logits(image_features_x, new_pos_cache_keys, pos_cache_values, pos_params['alpha'], pos_params['beta'], clip_weights)
                     loss = avg_entropy(final_logits)
-
-                    if all_classes: # 确保对齐损失的输入有效
-                         image2text_loss = InfoNCELoss(new_pos_cache_keys.T, new_clip_weights[:, all_classes].T)
-                         loss += image2text_loss * lr_cfg['align']
+                    # alignment loss
+                    image2text_loss = InfoNCELoss(new_pos_cache_keys.T, new_clip_weights[:, all_classes].T)
+                    loss += image2text_loss * lr_cfg['align']
                 else:
-                    # 如果没有启用或没有缓存，损失基于 new_clip_weights 计算的 logits (需要重新计算或调整逻辑)
-                    # 为保持与原代码相似性，如果不用缓存，则基于初始 logits 计算熵？ 或基于 new_clip_weights 计算？
-                    # 假设基于 new_clip_weights 更合理
-                    _, current_clip_logits, _, _, _ = get_clip_logits(images, clip_model, new_clip_weights)
-                    loss = avg_entropy(current_clip_logits) # 基于当前文本适应后的 logits 计算熵
+                    loss = avg_entropy(final_logits)
                 
                 lr_text = lr_cfg['text']
                 lr_image = lr_cfg['image']
+                if pos_enabled and pos_cache:
+                    optimizer = torch.optim.AdamW([
+                        {'params': text_residue.U, 'lr': lr_text, 'eps': 1e-3, 'weight_decay': 1e-1},
+                        {'params': text_residue.V, 'lr': lr_text, 'eps': 1e-3, 'weight_decay': 1e-1},
+                        {'params': pos_cache_residue.U, 'lr': lr_image, 'eps': 1e-3, 'weight_decay': 1e-1},
+                        {'params': pos_cache_residue.V, 'lr': lr_image, 'eps': 1e-3, 'weight_decay': 1e-1}
+                    ])
+                else:
+                    optimizer = torch.optim.AdamW([
+                        {'params': text_residue.U, 'lr': lr_text, 'eps': 1e-3, 'weight_decay': 1e-1},
+                        {'params': text_residue.V, 'lr': lr_text, 'eps': 1e-3, 'weight_decay': 1e-1}
+                    ])
 
-
-                # --- 优化器部分无需修改 ---
-                params_to_optimize = [{'params': text_residue.parameters(), 'lr': lr_text, 'eps': 1e-3, 'weight_decay': 1e-1}]
-                if pos_enabled and current_pos_cache_residue is not None:
-                    params_to_optimize.append({'params': current_pos_cache_residue.parameters(), 'lr': lr_image, 'eps': 1e-3, 'weight_decay': 1e-1})
-
-                if params_to_optimize: # 确保有参数可优化
-                    optimizer = torch.optim.AdamW(params_to_optimize)
-                    optimizer.zero_grad()
-                    if j == steps - 1:
-                        loss.backward()
-                    else:
-                        loss.backward(retain_graph=True) # 如果 steps > 1 可能需要
-                    optimizer.step()
+                optimizer.zero_grad()
+                if j == steps - 1:
+                    loss.backward()
+                else:
+                    loss.backward(retain_graph=True)
+                optimizer.step()
 
             # Actual inference
             text_residue.eval()
-            final_pos_cache_residue = None
-
             if pos_enabled and pos_cache:
                 pos_cache_residue.eval()
-                final_pos_cache_residue = pos_cache_residue
-
             with torch.no_grad():
-                final_clip_weights = text_residue(clip_weights_local)
-
-                # (获取推理 logits)
+                new_clip_weights = text_residue(clip_weights_local)
                 if dataset_name == 'A':
-                    image_features, clip_logits_inf, _, _, _ = get_clip_logits(images, clip_model, final_clip_weights)
+                    image_features, clip_logits, _, _, _ = get_clip_logits(images, clip_model, new_clip_weights)
                 else:
-                    img_input = images[0] if isinstance(images, list) else images
-                    image_features, clip_logits_inf, _, _, _ = get_clip_logits(img_input, clip_model, final_clip_weights)
-
-                final_logits_inf = clip_logits_inf.clone()
-
-
-                if pos_enabled and final_pos_cache_residue is not None and pos_cache_keys is not None:
-                    # --- 使用最终优化后的 pos_cache_residue ---
-                    final_pos_cache_keys = final_pos_cache_residue(pos_cache_keys)
-                    final_logits_inf += compute_cache_logits(image_features, final_pos_cache_keys, pos_cache_values, pos_params['alpha'], pos_params['beta'], clip_weights)   
+                    image_features, clip_logits, _, _, _ = get_clip_logits(images[0], clip_model, new_clip_weights)
+                final_logits = clip_logits.clone()
+                if pos_enabled and pos_cache:
+                    new_pos_cache_keys = pos_cache_residue(pos_cache_keys)
+                    final_logits += compute_cache_logits(image_features, new_pos_cache_keys, pos_cache_values, pos_params['alpha'], pos_params['beta'], clip_weights)       
                     
-                acc = cls_acc(final_logits_inf, target.cuda())
+                acc = cls_acc(final_logits, target.cuda())  
                 accuracies.append(acc)
-                if wandb.run is not None:
-                    wandb.log({"Averaged test accuracy": sum(accuracies)/len(accuracies)}, commit=True)
+                wandb.log({"Averaged test accuracy": sum(accuracies)/len(accuracies)}, commit=True)
                 
-                final_loss_inf = avg_entropy(final_logits_inf)
+                loss = avg_entropy(final_logits)
                 
                 # Global update step: textual prototype evolution
-                if get_entropy(final_loss_inf, clip_weights) < 0.1:
+                # lam = 0.99
+                # clip_weights_global = sum([w * clip for w, clip in zip(weights, all_clip_weights)])
+                if get_entropy(loss, clip_weights) < 0.1:
+                    # Full Update
+                    # clip_weights_global = new_clip_weights 
+                    # Cumalative Avg
                     num_avg += 1
-                    clip_weights_global = clip_weights_global * (num_avg / (num_avg + 1)) + final_clip_weights * (1 / (num_avg + 1))
-                    # clip_weights_global = F.normalize(clip_weights_global, dim=0)
-
+                    clip_weights_global = clip_weights_global * (num_avg / (num_avg + 1)) + new_clip_weights * (1 / (num_avg + 1))
+                    # clip_weights_global = clip_weights_global / clip_weights_global.norm(dim=0)
+                    # Exponential Avg
+                    # clip_weights_global = clip_weights_global * lam + new_clip_weights * (1 - lam)
+        
             if i % 1000 == 0:
                 print("---- DPE's test accuracy: {:.2f}. ----\n".format(sum(accuracies)/len(accuracies)))
+    print("---- DPE's test accuracy: {:.2f}. ----\n".format(sum(accuracies)/len(accuracies)))   
+    
 
-        print("---- DPE's test accuracy: {:.2f}. ----\n".format(sum(accuracies)/len(accuracies)))
-        return sum(accuracies)/len(accuracies)
+    return sum(accuracies)/len(accuracies)
 
 def main():
     args = get_arguments()
@@ -521,7 +437,7 @@ def main():
 
         if args.wandb:
             run_name = f"{dataset_name}"
-            run = wandb.init(project="20250405-DPE", config=cfg, group=group_name, name=run_name)
+            run = wandb.init(project="20250404-DPE", config=cfg, group=group_name, name=run_name)
 
         acc = run_test_dpe(cfg['positive'], cfg['learning_rate'], test_loader, clip_model, clip_weights, dataset_name)
 
