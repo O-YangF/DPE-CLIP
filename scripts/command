@@ -1,0 +1,1 @@
+python main_dpe.py --config configs --wandb-log --datasets A --backbone ViT-B/16

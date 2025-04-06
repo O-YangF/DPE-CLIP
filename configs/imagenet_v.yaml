@@ -6,6 +6,8 @@ positive:
   shot_capacity: 3
   alpha: 3.0
   beta: 8.0 
+  low_rank:
+    rank: 64
 
 learning_rate:
   text: 0.0005

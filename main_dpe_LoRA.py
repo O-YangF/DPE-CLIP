@@ -18,7 +18,6 @@ from utils import *
 
 import open_clip
 
-
 def get_arguments():
     """Get arguments of the test-time adaptation."""
     parser = argparse.ArgumentParser()
@@ -157,27 +156,34 @@ def compute_cache_logits(image_features, cache_keys, cache_values, alpha, beta, 
     return alpha * cache_logits
     
 class TextResidue(nn.Module):
-    def __init__(self, clip_weights):
+    def __init__(self, clip_weights, rank=16):
         super(TextResidue, self).__init__()
         self.feat_dim, self.cate_num = clip_weights.shape
-        self.residual = nn.Parameter(torch.zeros([self.feat_dim, self.cate_num]).half().cuda(), requires_grad=True)
+        self.rank = rank
+        self.U = nn.Parameter(torch.zeros([self.feat_dim, self.rank]).half().cuda(), requires_grad=True)
+        self.V = nn.Parameter(torch.zeros([self.rank, self.cate_num]).half().cuda(), requires_grad=True)
         
     def forward(self, x):
-        new_clip_weights = x.clone() + self.residual
+        residual = self.U @ self.V
+        new_clip_weights = x.clone() + residual
         new_clip_weights = F.normalize(new_clip_weights, dim=0)
         return new_clip_weights
     
     def reset(self):
-        self.residual = nn.Parameter(torch.zeros([self.feat_dim, self.cate_num]).half().cuda(), requires_grad=True)
+        self.U = nn.Parameter(torch.zeros([self.feat_dim, self.rank]).half().cuda(), requires_grad=True)
+        self.V = nn.Parameter(torch.zeros([self.rank, self.cate_num]).half().cuda(), requires_grad=True)
         
 class PositiveCacheResidue(nn.Module):
-    def __init__(self, pos_cache_keys):
+    def __init__(self, pos_cache_keys, rank=16):
         super(PositiveCacheResidue, self).__init__()
         self.feat_dim, self.cache_size = pos_cache_keys.shape
-        self.residual = nn.Parameter(torch.zeros([self.feat_dim, self.cache_size]).half().cuda(), requires_grad=True)
+        self.rank = rank
+        self.U = nn.Parameter(torch.zeros([self.feat_dim, self.rank]).half().cuda(), requires_grad=True)
+        self.V = nn.Parameter(torch.zeros([self.rank, self.cache_size]).half().cuda(), requires_grad=True)
         
     def forward(self, x):
-        new_pos_cache_keys = x.clone() + self.residual
+        residual = self.U @ self.V
+        new_pos_cache_keys = x.clone() + residual
         new_pos_cache_keys = F.normalize(new_pos_cache_keys, dim=0)
         return new_pos_cache_keys
 
@@ -215,7 +221,7 @@ def run_test_dpe(pos_cfg, lr_cfg, loader, clip_model, clip_weights, dataset_name
         # Test-time adaptation
         for i, (images, target) in enumerate(tqdm(loader, desc='Processed test images: ')):
             clip_weights_local = clip_weights_global.clone().detach()
-            text_residue = TextResidue(clip_weights_local)
+            text_residue = TextResidue(clip_weights_local, rank=16)
             new_clip_weights = text_residue(clip_weights_local)
 
             image_features_x, clip_logits, entropy, prob_map, pred = get_clip_logits(images, clip_model, new_clip_weights)
@@ -225,7 +231,7 @@ def run_test_dpe(pos_cfg, lr_cfg, loader, clip_model, clip_weights, dataset_name
                 entropy = get_entropy(entropy, clip_weights)
                 update_cache(pos_cache, pred, [image_features_x, entropy], pos_params['shot_capacity'])
                 pos_cache_keys, pos_cache_values, all_classes = cache_key_value(image_features_x, pos_cache, pos_params['alpha'], pos_params['beta'], clip_weights)
-                pos_cache_residue = PositiveCacheResidue(pos_cache_keys)
+                pos_cache_residue = PositiveCacheResidue(pos_cache_keys, rank=16)
                 # if i != 0 and i % 1000 == 0:
                 #     visualize_cache(pos_cache, i)
             steps = 1 # Update step, set to 1 in default
@@ -246,13 +252,16 @@ def run_test_dpe(pos_cfg, lr_cfg, loader, clip_model, clip_weights, dataset_name
                 lr_image = lr_cfg['image']
                 if pos_enabled and pos_cache:
                     optimizer = torch.optim.AdamW([
-                        {'params': text_residue.parameters(), 'lr': lr_text, 'eps': 1e-3, 'weight_decay': 1e-1},
-                        {'params': pos_cache_residue.parameters(), 'lr': lr_image, 'eps': 1e-3, 'weight_decay': 1e-1}
-                        ])
+                        {'params': text_residue.U, 'lr': lr_text, 'eps': 1e-3, 'weight_decay': 1e-1},
+                        {'params': text_residue.V, 'lr': lr_text, 'eps': 1e-3, 'weight_decay': 1e-1},
+                        {'params': pos_cache_residue.U, 'lr': lr_image, 'eps': 1e-3, 'weight_decay': 1e-1},
+                        {'params': pos_cache_residue.V, 'lr': lr_image, 'eps': 1e-3, 'weight_decay': 1e-1}
+                    ])
                 else:
                     optimizer = torch.optim.AdamW([
-                        {'params': text_residue.parameters(), 'lr': lr_text, 'eps': 1e-3, 'weight_decay': 1e-1}
-                        ])
+                        {'params': text_residue.U, 'lr': lr_text, 'eps': 1e-3, 'weight_decay': 1e-1},
+                        {'params': text_residue.V, 'lr': lr_text, 'eps': 1e-3, 'weight_decay': 1e-1}
+                    ])
 
                 optimizer.zero_grad()
                 if j == steps - 1:
@@ -338,7 +347,7 @@ def main():
 
         if args.wandb:
             run_name = f"{dataset_name}"
-            run = wandb.init(project="20250405-DPE", config=cfg, group=group_name, name=run_name)
+            run = wandb.init(project="20250404-DPE", config=cfg, group=group_name, name=run_name)
 
         acc = run_test_dpe(cfg['positive'], cfg['learning_rate'], test_loader, clip_model, clip_weights, dataset_name)
 
