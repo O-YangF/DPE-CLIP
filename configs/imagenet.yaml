@@ -8,6 +8,7 @@ positive:
   beta: 5.0 
   low_rank:
     rank: 64
+  similarity_threshold: 0.9
 
 learning_rate:
   text: 0.0006

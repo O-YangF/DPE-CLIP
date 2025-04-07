@@ -1,0 +1,50 @@
+{
+  "os": "Linux-5.15.146.1-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+  "python": "CPython 3.10.16",
+  "startedAt": "2025-04-06T09:14:34.219119Z",
+  "args": [
+    "--config",
+    "configs",
+    "--wandb-log",
+    "--datasets",
+    "I",
+    "--backbone",
+    "ViT-B/16"
+  ],
+  "program": "/home/GFMMOSTTA/DPE-CLIP/main_dpe_LoRA.py",
+  "codePath": "main_dpe_LoRA.py",
+  "git": {
+    "remote": "git@github.com:O-YangF/DPE-CLIP.git",
+    "commit": "86a4cc5255c138b2814667a2f5e733d710d21f4c"
+  },
+  "email": "you299854@gmail.com",
+  "root": "/home/GFMMOSTTA/DPE-CLIP",
+  "host": "oyf",
+  "executable": "/root/anaconda3/envs/dpe/bin/python",
+  "codePathLocal": "main_dpe_LoRA.py",
+  "cpu_count": 2,
+  "cpu_count_logical": 4,
+  "gpu": "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "gpu_count": 1,
+  "disk": {
+    "/": {
+      "total": "1081101176832",
+      "used": "136182829056"
+    }
+  },
+  "memory": {
+    "total": "12548206592"
+  },
+  "cpu": {
+    "count": 2,
+    "countLogical": 4
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+      "memoryTotal": "8585740288",
+      "architecture": "Ada"
+    }
+  ],
+  "cudaVersion": "12.5"
+}

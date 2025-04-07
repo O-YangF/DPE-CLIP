@@ -347,7 +347,7 @@ def main():
 
         if args.wandb:
             run_name = f"{dataset_name}"
-            run = wandb.init(project="20250404-DPE", config=cfg, group=group_name, name=run_name)
+            run = wandb.init(project="20250406-DPE-normalResidue", config=cfg, group=group_name, name=run_name)
 
         acc = run_test_dpe(cfg['positive'], cfg['learning_rate'], test_loader, clip_model, clip_weights, dataset_name)
 
